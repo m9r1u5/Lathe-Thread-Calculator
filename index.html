@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#15171a">
+<link rel="manifest" href="manifest.json">
+<title>Lathe Gear Calculator</title>
+<style>
+:root{--bg:#15171a;--panel:#22262b;--line:#4a5058;--text:#f4f4f0;--dim:#b4b9c0;--acc:#ffc400;--bad:#ff6b5c;--ok:#5be08a}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+body{padding:max(12px,env(safe-area-inset-top)) 14px max(20px,env(safe-area-inset-bottom));max-width:560px;margin:0 auto;font-size:18px}
+h1{font-size:20px;margin:4px 0 12px;letter-spacing:.02em}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:0;border:2px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{min-height:56px;font-size:20px;font-weight:700;background:var(--panel);color:var(--dim);border:0}
+.seg button[aria-pressed=true]{background:var(--acc);color:#111}
+label{display:block;margin:16px 0 6px;color:var(--dim)}
+.row{display:flex;gap:10px}
+input{flex:1;min-width:0;min-height:64px;font-size:30px;font-weight:700;padding:0 14px;background:#0d0e10;color:var(--text);border:2px solid var(--line);border-radius:10px}
+input:focus,button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+.unit{display:flex;align-items:center;font-size:20px;color:var(--dim);min-width:48px}
+.go{min-height:64px;padding:0 22px;font-size:22px;font-weight:800;background:var(--acc);color:#111;border:0;border-radius:10px}
+.msg{min-height:1.4em;margin:10px 0 0;font-weight:600}
+.msg.err{color:var(--bad)}.msg.ok{color:var(--ok)}.msg.warn{color:var(--acc)}
+.gears{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.g{background:var(--panel);border:2px solid var(--line);border-radius:10px;padding:8px 6px;text-align:center}
+.g b{display:block;font-size:15px;color:var(--dim);font-weight:600}
+.g span{display:block;font-size:40px;font-weight:800;font-variant-numeric:tabular-nums;min-height:48px;line-height:48px}
+.g.on{border-color:var(--acc)}
+.g.on span{color:var(--acc)}
+.opts{display:grid;gap:8px;margin-top:14px}
+.opt{width:100%;min-height:64px;text-align:left;padding:8px 14px;background:var(--panel);color:var(--text);border:2px solid var(--line);border-radius:10px;font-size:18px}
+.opt[aria-pressed=true]{border-color:var(--acc);background:#2d2a18}
+.opt small{display:block;color:var(--dim);font-size:15px;margin-top:2px}
+.acts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}
+.acts button{min-height:60px;font-size:20px;font-weight:700;background:var(--panel);color:var(--text);border:2px solid var(--line);border-radius:10px}
+.acts button:disabled{opacity:.4}
+.acts .wide{grid-column:1/-1}
+.hint{margin-top:16px;color:var(--dim);font-size:14px;line-height:1.4}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<h1>Lathe change gears</h1>
+
+<div class="seg" role="group" aria-label="Units">
+  <button id="bMetric" aria-pressed="true">Metric</button>
+  <button id="bImp" aria-pressed="false">Imperial</button>
+</div>
+
+<label for="pitch" id="pitchLbl">Pitch (mm)</label>
+<div class="row">
+  <input id="pitch" inputmode="decimal" autocomplete="off" placeholder="1.5">
+  <span class="unit" id="unit">mm</span>
+  <button class="go" id="calc">Calculate</button>
+</div>
+<p class="msg" id="msg" role="status" aria-live="polite"></p>
+
+<div class="gears" id="gears"></div>
+<div class="opts" id="opts"></div>
+
+<div class="acts">
+  <button id="share" disabled>Share</button>
+  <button id="dl" disabled>Download</button>
+  <button id="install" class="wide" hidden>Install app</button>
+</div>
+<p class="hint" id="hint"></p>
+
+<script>
+/* ===================== EDIT YOUR DATA HERE ===================== */
+const DATA = {
+  // pitch (mm) = constantMm x (M/N) x (A/B) x (C/D)   (fits every row of your plate)
+  constantMm: 3,
+  // Selectable M/N pairs, in the same order as the plate columns
+  mnPairs: [[24, 60], [28, 35]],
+  // Every gear you own (list a tooth count twice if you have two of them)
+  gears: [24, 25, 27, 28, 30, 32, 32, 34, 35, 36, 40, 42, 48, 50],
+  // Extra combinations found by search must be within this error (%) of the target
+  searchTolerancePct: 0.1,
+  // Maximum number of options shown
+  maxOptions: 10,
+  // Optional clearance check for found combinations: A+B >= C+margin and C+D >= B+margin
+  // Leave off unless you know your banjo geometry.
+  clearance: { enabled: false, margin: 15 },
+  // Rows copied from your plate: [A, B, C, D, mm@M24, mm@M28, TPI@M24, TPI@M28]  (null = not on plate)
+  plate: [
+    [28,35,25,48, 0.5,1,    null,null],
+    [30,36,24,40, 0.6,null, null,null],
+    [28,36,30,40, 0.7,null, null,null],
+    [25,40,32,32, 0.75,1.5, null,null],
+    [28,32,32,42, 0.8,null, null,null],
+    [32,36,30,32, 1,2,      null,null],
+    [30,32,40,36, 1.25,2.5, null,null],
+    [30,36,42,28, 1.5,3,    null,null],
+    [35,30,40,32, 1.75,3.5, null,null],
+    [35,30,40,28, 2,4,      null,null],
+    [32,34,35,28, null,null, 18,9],
+    [32,36,35,28, null,null, 19,9.5],
+    [30,27,40,42, null,null, 20,10],
+    [32,30,36,40, null,null, 22,11],
+    [27,42,40,28, null,null, 23,11.5],
+    [30,34,32,32, null,null, 24,12],
+    [32,35,32,36, null,null, 26,13],
+    [30,27,34,50, null,null, 28,14],
+    [35,32,27,42, null,null, 30,15],
+    [35,34,27,42, null,null, 32,16],
+    [30,34,28,42, null,null, 36,18],
+    [30,32,27,48, null,null, 40,20]
+  ],
+  // Accepted input ranges
+  limits: { mmMin: 0.1, mmMax: 10, tpiMin: 2, tpiMax: 100 }
+};
+/* =============================================================== */
+
+const $ = id => document.getElementById(id);
+const NAMES = ['M','N','A','B','C','D'];
+let imperial = false, options = [], sel = -1, current = null, deferred = null;
+
+NAMES.forEach(n => {
+  const d = document.createElement('div');
+  d.className = 'g'; d.id = 'g' + n;
+  d.innerHTML = '<b>' + n + '</b><span>–</span>';
+  $('gears').appendChild(d);
+});
+
+function setUnits(imp) {
+  imperial = imp;
+  $('bMetric').setAttribute('aria-pressed', !imp);
+  $('bImp').setAttribute('aria-pressed', imp);
+  $('pitchLbl').textContent = imp ? 'Threads per inch (TPI)' : 'Pitch (mm)';
+  $('unit').textContent = imp ? 'TPI' : 'mm';
+  $('pitch').placeholder = imp ? '20' : '1.5';
+  $('pitch').value = '';
+  clearResult('');
+}
+$('bMetric').onclick = () => setUnits(false);
+$('bImp').onclick = () => setUnits(true);
+
+function say(text, cls) { const m = $('msg'); m.textContent = text; m.className = 'msg ' + (cls || ''); }
+
+function clearResult(text) {
+  options = []; sel = -1; current = null;
+  NAMES.forEach(n => { $('g' + n).classList.remove('on'); $('g' + n).lastChild.textContent = '–'; });
+  $('opts').innerHTML = '';
+  $('share').disabled = $('dl').disabled = true;
+  say(text || '');
+}
+
+function parseInput() {
+  const raw = $('pitch').value.trim().replace(',', '.');
+  if (!raw) return { err: 'Enter a pitch first.' };
+  if (!/^\d*\.?\d+$|^\d+\.$/.test(raw)) return { err: 'Numbers only, for example ' + (imperial ? '20' : '1.5') + '.' };
+  const v = parseFloat(raw);
+  const L = DATA.limits;
+  if (imperial) {
+    if (v < L.tpiMin || v > L.tpiMax) return { err: 'TPI must be between ' + L.tpiMin + ' and ' + L.tpiMax + '.' };
+    return { value: v, mm: 25.4 / v };
+  }
+  if (v < L.mmMin || v > L.mmMax) return { err: 'Pitch must be between ' + L.mmMin + ' and ' + L.mmMax + ' mm.' };
+  return { value: v, mm: v };
+}
+
+const pitchOf = (mn, a, b, c, d) => DATA.constantMm * (mn[0] / mn[1]) * (a / b) * (c / d);
+const errPct = (got, want) => (got - want) / want * 100;
+const clearOK = (a, b, c, d) => !DATA.clearance.enabled ||
+  (a + b >= c + DATA.clearance.margin && c + d >= b + DATA.clearance.margin);
+const key = (i, a, b, c, d) => i + ':' + [a, c].sort() + '/' + [b, d].sort();
+
+function compute(inp) {
+  const target = inp.mm, found = new Map();
+  // 1) Plate combinations for this pitch
+  DATA.plate.forEach(r => {
+    DATA.mnPairs.forEach((mn, i) => {
+      const v = r[(imperial ? 6 : 4) + i];
+      if (v != null && Math.abs(v - inp.value) < 1e-9) {
+        const e = errPct(pitchOf(mn, r[0], r[1], r[2], r[3]), target);
+        found.set(key(i, r[0], r[1], r[2], r[3]),
+          { mn, g: [r[0], r[1], r[2], r[3]], err: e, src: 'On your plate' });
+      }
+    });
+  });
+  // 2) Search every arrangement of your gears
+  const G = DATA.gears, n = G.length;
+  let best = null;
+  DATA.mnPairs.forEach((mn, mi) => {
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { if (j === i) continue;
+      for (let k = 0; k < n; k++) { if (k === i || k === j) continue;
+        for (let l = 0; l < n; l++) { if (l === i || l === j || l === k) continue;
+          const a = G[i], b = G[j], c = G[k], d = G[l];
+          if (!clearOK(a, b, c, d)) continue;
+          const e = errPct(pitchOf(mn, a, b, c, d), target);
+          if (!best || Math.abs(e) < Math.abs(best.err) - 1e-12) best = { mn, g: [a, b, c, d], err: e, src: 'Closest found' };
+          if (Math.abs(e) <= DATA.searchTolerancePct) {
+            const kk = key(mi, a, b, c, d);
+            if (!found.has(kk)) found.set(kk, { mn, g: [a, b, c, d], err: e, src: 'Found by search' });
+          }
+        }}}
+  });
+  const list = [...found.values()].sort((x, y) =>
+    (x.src === 'On your plate' ? 0 : 1) - (y.src === 'On your plate' ? 0 : 1) ||
+    Math.abs(x.err) - Math.abs(y.err));
+  return { list: list.slice(0, DATA.maxOptions), best };
+}
+
+const fmtErr = e => Math.abs(e) < 0.0005 ? 'exact' : (e > 0 ? '+' : '') + e.toFixed(3) + '%';
+const setLine = o => 'M' + o.mn[0] + ' N' + o.mn[1] + ' · A' + o.g[0] + ' B' + o.g[1] + ' · C' + o.g[2] + ' D' + o.g[3];
+
+function fill(i) {
+  sel = i; current = options[i];
+  const o = current, vals = [o.mn[0], o.mn[1], ...o.g];
+  NAMES.forEach((n, k) => { const g = $('g' + n); g.classList.add('on'); g.lastChild.textContent = vals[k]; });
+  [...$('opts').children].forEach((b, k) => b.setAttribute('aria-pressed', k === i));
+  $('share').disabled = $('dl').disabled = false;
+}
+
+function showOptions() {
+  const box = $('opts'); box.innerHTML = '';
+  options.forEach((o, i) => {
+    const b = document.createElement('button');
+    b.className = 'opt'; b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = '<b>Option ' + (i + 1) + '</b> – error ' + fmtErr(o.err) + '<small>' + setLine(o) + ' · ' + o.src + '</small>';
+    b.onclick = () => fill(i);
+    box.appendChild(b);
+  });
+}
+
+$('calc').onclick = () => {
+  clearResult('');
+  const inp = parseInput();
+  if (inp.err) { say(inp.err, 'err'); return; }
+  const r = compute(inp);
+  current_inp = inp;
+  if (r.list.length) {
+    options = r.list; showOptions(); fill(0);
+    say(options.length + (options.length === 1 ? ' combination' : ' combinations') + ' for ' + label(inp) + '. Tap an option to switch.', 'ok');
+  } else if (r.best) {
+    options = [r.best]; showOptions(); fill(0);
+    say('No combination matches ' + label(inp) + '. Closest shown, error ' + fmtErr(r.best.err) + '.', 'warn');
+  } else {
+    say('No gear combination could be built from your gears.', 'err');
+  }
+};
+let current_inp = null;
+$('pitch').addEventListener('keydown', e => { if (e.key === 'Enter') $('calc').click(); });
+const label = inp => imperial ? inp.value + ' TPI' : inp.value + ' mm';
+
+function resultText() {
+  const o = current;
+  return 'Thread: ' + label(current_inp) + '\n' +
+    'M ' + o.mn[0] + '   N ' + o.mn[1] + '\n' +
+    'A ' + o.g[0] + '   B ' + o.g[1] + '\n' +
+    'C ' + o.g[2] + '   D ' + o.g[3] + '\n' +
+    'Pitch error: ' + fmtErr(o.err);
+}
+
+$('share').onclick = async () => {
+  const text = resultText();
+  try {
+    if (navigator.share) { await navigator.share({ title: 'Lathe gears', text }); return; }
+    throw 0;
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    try { await navigator.clipboard.writeText(text); say('Copied to clipboard.', 'ok'); }
+    catch (_) {
+      const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t);
+      t.select(); try { document.execCommand('copy'); say('Copied to clipboard.', 'ok'); } catch (__) { say('Could not share or copy.', 'err'); }
+      t.remove();
+    }
+  }
+};
+
+$('dl').onclick = () => {
+  const blob = new Blob([resultText() + '\n'], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'gears-' + (imperial ? current_inp.value + 'tpi' : current_inp.value + 'mm') + '.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  say('Saved ' + a.download, 'ok');
+};
+
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferred = e; $('install').hidden = false; });
+$('install').onclick = async () => {
+  if (!deferred) return;
+  deferred.prompt(); await deferred.userChoice; deferred = null; $('install').hidden = true;
+};
+window.addEventListener('appinstalled', () => { $('install').hidden = true; });
+
+function setHint(extra) {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches;
+  $('hint').textContent = (extra ? extra + ' ' : '') +
+    (standalone ? '' : 'No Install button? Open the browser menu and choose Add to Home screen.');
+}
+setHint('');
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js', { scope: './', updateViaCache: 'none' })
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => caches.has('lathe-gears-v2'))
+    .then(ok => setHint(ok ? 'Offline ready.' : ''))
+    .catch(() => setHint('Offline mode could not start.'));
+} else setHint('This browser does not support offline mode.');
+</script>
+</body>
+</html>
